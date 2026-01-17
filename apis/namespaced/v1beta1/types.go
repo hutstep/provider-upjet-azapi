@@ -15,12 +15,44 @@ import (
 type ProviderConfigSpec struct {
 	// Credentials required to authenticate to this provider.
 	Credentials ProviderCredentials `json:"credentials"`
+
+	// SubscriptionID is the Azure subscription ID to be used.
+	// If unset, subscription ID from Credentials will be used.
+	// Required when Credentials.Source is InjectedIdentity, OIDCTokenFile.
+	// +kubebuilder:validation:Optional
+	SubscriptionID *string `json:"subscriptionID,omitempty"`
+
+	// ClientID is the user-assigned managed identity's ID
+	// when Credentials.Source is `InjectedIdentity`. If unset and
+	// Credentials.Source is `InjectedIdentity`, then a system-assigned
+	// managed identity is used.
+	// Required if Credentials.Source is OIDCTokenFile.
+	// +kubebuilder:validation:Optional
+	ClientID *string `json:"clientID,omitempty"`
+
+	// TenantID is the Azure AD tenant ID to be used.
+	// If unset, tenant ID from Credentials will be used.
+	// Required if Credentials.Source is InjectedIdentity, OIDCTokenFile.
+	// +kubebuilder:validation:Optional
+	TenantID *string `json:"tenantID,omitempty"`
+
+	// The Cloud Environment which should be used. Possible values are "public",
+	// "usgovernment", and "china". Defaults to "public".
+	// +kubebuilder:validation:Optional
+	Environment *string `json:"environment,omitempty"`
+
+	// OIDCTokenFilePath is the optional path to a token file
+	// that allows to access a managed identity.
+	// Defaults to /var/run/secrets/azure/tokens/azure-identity-token when
+	// Credentials.Source is OIDCTokenFile.
+	// +kubebuilder:validation:Optional
+	OIDCTokenFilePath *string `json:"oidcTokenFilePath,omitempty"`
 }
 
 // ProviderCredentials required to authenticate.
 type ProviderCredentials struct {
 	// Source of the provider credentials.
-	// +kubebuilder:validation:Enum=None;Secret;InjectedIdentity;Environment;Filesystem
+	// +kubebuilder:validation:Enum=None;Secret;InjectedIdentity;Environment;Filesystem;UserAssignedManagedIdentity;SystemAssignedManagedIdentity;OIDCTokenFile
 	Source xpv1.CredentialsSource `json:"source"`
 
 	xpv1.CommonCredentialSelectors `json:",inline"`

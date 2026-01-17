@@ -1,0 +1,24 @@
+# ProviderConfig for System-Assigned Managed Identity
+#
+# This configuration uses System-Assigned Managed Identity authentication.
+# This is useful when running on Azure VMs or AKS with pod managed identity.
+#
+# Prerequisites:
+# 1. System-assigned managed identity enabled on the VM/VMSS or pod
+# 2. The managed identity has appropriate RBAC permissions
+---
+apiVersion: azapi.upbound.io/v1beta1
+kind: ProviderConfig
+metadata:
+  name: system-managed-identity
+spec:
+  credentials:
+    # SystemAssignedManagedIdentity uses the system-assigned managed identity
+    source: SystemAssignedManagedIdentity
+  # Azure Subscription ID where resources will be managed
+  subscriptionID: '00000000-0000-0000-0000-000000000000'
+  # Azure AD Tenant ID
+  tenantID: '00000000-0000-0000-0000-000000000000'
+  # Optional: Azure environment (public, usgovernment, china)
+  # Default: public
+  # environment: "public"

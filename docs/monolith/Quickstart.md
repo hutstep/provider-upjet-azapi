@@ -7,9 +7,10 @@ weight: 1
 
 This guide walks through the process to install Upbound Universal Crossplane and install the AzAPI official provider.
 
-To use AzAPI official provider, install Upbound Universal Crossplane into your Kubernetes cluster, install the `Provider`, apply a `ProviderConfig`, and create a *managed resource* in AzAPI via Kubernetes.
+To use AzAPI official provider, install Upbound Universal Crossplane into your Kubernetes cluster, install the `Provider`, apply a `ProviderConfig`, and create a _managed resource_ in AzAPI via Kubernetes.
 
 ## Install the Up command-line
+
 Download and install the Upbound `up` command-line.
 
 ```shell
@@ -27,6 +28,7 @@ v0.36.2
 _Note_: official providers only support `up` command-line versions v0.13.0 or later.
 
 ## Install Universal Crossplane
+
 Install Upbound Universal Crossplane with the Up command-line.
 
 ```shell
@@ -58,7 +60,7 @@ spec:
 
 Apply this configuration with `kubectl apply -f`.
 
-After installing the provider, verify the install with `kubectl get providers`.   
+After installing the provider, verify the install with `kubectl get providers`.
 
 ```shell
 > kubectl get providers
@@ -69,12 +71,15 @@ provider-azapi   True        True      xpkg.upbound.io/upbound/provider-azapi:v0
 It may take up to 5 minutes to report `HEALTHY`.
 
 ## Create a Kubernetes secret
+
 The `provider-azapi` requires credentials to create and manage AzAPI resources.
 
 ### Install the Azure command-line
+
 Generating an [authentication file](https://docs.microsoft.com/en-us/azure/developer/go/azure-sdk-authorization#use-file-based-authentication) requires the Azure command-line. Follow the documentation from Microsoft to [Download and install the Azure command-line](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli).
 
 ### Create an Azure service principal
+
 Follow the Azure documentation to [find your Subscription ID](https://docs.microsoft.com/en-us/azure/azure-portal/get-subscription-tenant-id) from the Azure Portal.
 
 Log in to the Azure command-line.
@@ -86,10 +91,11 @@ az login
 Using the Azure command-line and provide your Subscription ID create a service principal and authentication file.
 
 ```command
-az ad sp create-for-rbac --sdk-auth --role Owner --scopes /subscriptions/<Subscription ID> 
+az ad sp create-for-rbac --sdk-auth --role Owner --scopes /subscriptions/<Subscription ID>
 ```
 
 The command generates a JSON file like this:
+
 ```json
 {
   "clientId": "5d73973c-1933-4621-9f6a-9642db949768",
@@ -108,11 +114,13 @@ The command generates a JSON file like this:
 Save this output as `azapi-credentials.json`.
 
 ### Create a Kubernetes secret with the AzAPI credentials JSON file
+
 Use `kubectl create secret -n upbound-system` to generate the Kubernetes secret object inside the Kubernetes cluster.
 
 `kubectl create secret generic azapi-secret -n upbound-system --from-file=creds=./azure-credentials.json`
 
 View the secret with `kubectl describe secret`
+
 ```shell
 $ kubectl describe secret azure-secret -n upbound-system
 Name:         azapi-secret
@@ -126,7 +134,9 @@ Data
 ====
 creds:  629 bytes
 ```
+
 ## Create a ProviderConfig
+
 Create a `ProviderConfig` Kubernetes configuration file to attach the AzAPI credentials to the installed official `provider-azapi`.
 
 ```yaml
@@ -147,7 +157,7 @@ Apply this configuration with `kubectl apply -f`.
 
 **Note:** the `Providerconfig` value `spec.secretRef.name` must match the `name` of the secret in `kubectl get secrets -n upbound-system` and `spec.secretRef.key` must match the value in the `Data` section of the secret.
 
-Verify the `ProviderConfig` with `kubectl describe providerconfigs`. 
+Verify the `ProviderConfig` with `kubectl describe providerconfigs`.
 
 ```yaml
 $ kubectl describe providerconfigs
@@ -165,7 +175,61 @@ Spec:
     Source:       Secret
 ```
 
+### Alternative: Use Workload Identity Authentication
+
+Azure Workload Identity is the recommended authentication method when running in AKS. It eliminates the need for managing secrets by using federated identity credentials.
+
+#### Prerequisites for Workload Identity
+
+1. AKS cluster with workload identity enabled
+2. User-assigned managed identity with appropriate RBAC permissions
+3. Federated identity credential configured on the managed identity
+4. Service account annotated with the managed identity client ID
+
+For detailed setup instructions, see the [Azure Workload Identity documentation](https://learn.microsoft.com/en-us/azure/aks/workload-identity-overview).
+
+#### Create a ProviderConfig for Workload Identity
+
+```yaml
+apiVersion: azapi.upbound.io/v1beta1
+kind: ProviderConfig
+metadata:
+  name: workload-identity
+spec:
+  credentials:
+    source: OIDCTokenFile
+  subscriptionID: '<YOUR_SUBSCRIPTION_ID>'
+  tenantID: '<YOUR_TENANT_ID>'
+  clientID: '<YOUR_MANAGED_IDENTITY_CLIENT_ID>'
+  # Optional: defaults to /var/run/secrets/azure/tokens/azure-identity-token
+  # oidcTokenFilePath: "/var/run/secrets/azure/tokens/azure-identity-token"
+```
+
+The `OIDCTokenFile` source instructs the provider to use the OIDC token file mounted by the Azure Workload Identity webhook.
+
+#### Alternative Authentication Methods
+
+The provider also supports other authentication sources:
+
+- **SystemAssignedManagedIdentity**: Uses the system-assigned managed identity of the VM/pod
+- **UserAssignedManagedIdentity**: Uses a specific user-assigned managed identity
+
+Example for System-Assigned Managed Identity:
+
+```yaml
+apiVersion: azapi.upbound.io/v1beta1
+kind: ProviderConfig
+metadata:
+  name: system-msi
+spec:
+  credentials:
+    source: SystemAssignedManagedIdentity
+  subscriptionID: '<YOUR_SUBSCRIPTION_ID>'
+  tenantID: '<YOUR_TENANT_ID>'
+```
+
 ## Create a managed resource
+
 Create a managed resource to verify the `provider-azapi` is functioning.
 
 This example creates an AzAPI resource.
@@ -197,8 +261,8 @@ spec:
     name: registrytestupbound
     parentId: /subscriptions/<YOUR_SUBSCRIPTION_ID>/resourceGroups/<YOUR_RESOURCE_GROUP_NAME>
     responseExportValues:
-    - properties.loginServer
-    - properties.policies.quarantinePolicy.status
+      - properties.loginServer
+      - properties.policies.quarantinePolicy.status
     tags:
       Key: Value
     type: Microsoft.ContainerRegistry/registries@2020-11-01-preview
@@ -223,6 +287,7 @@ _Note:_ commands querying AzAPI resources may be slow to respond because of Azur
 If the `READY` or `SYNCED` are blank or `False` use `kubectl describe` to understand why.
 
 ## Delete the managed resource
+
 Remove the managed resource by using `kubectl delete -f` with the same `Resource` object file. It takes a up to 5 minutes for Kubernetes to delete the resource and complete the command.
 
 Verify removal of the resource group with `kubectl get resourcegroup`

@@ -1,0 +1,28 @@
+# ProviderConfig for User-Assigned Managed Identity
+#
+# This configuration uses User-Assigned Managed Identity authentication.
+# This is useful when you want to use a specific managed identity rather
+# than the system-assigned one.
+#
+# Prerequisites:
+# 1. User-assigned managed identity created in Azure
+# 2. The identity assigned to the VM/VMSS or pod
+# 3. The managed identity has appropriate RBAC permissions
+---
+apiVersion: azapi.upbound.io/v1beta1
+kind: ProviderConfig
+metadata:
+  name: user-managed-identity
+spec:
+  credentials:
+    # UserAssignedManagedIdentity uses a specific user-assigned managed identity
+    source: UserAssignedManagedIdentity
+  # Azure Subscription ID where resources will be managed
+  subscriptionID: '00000000-0000-0000-0000-000000000000'
+  # Azure AD Tenant ID
+  tenantID: '00000000-0000-0000-0000-000000000000'
+  # Client ID of the user-assigned managed identity
+  clientID: '00000000-0000-0000-0000-000000000000'
+  # Optional: Azure environment (public, usgovernment, china)
+  # Default: public
+  # environment: "public"

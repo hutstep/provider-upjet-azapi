@@ -7,8 +7,10 @@ package clients
 import (
 	"context"
 	"encoding/json"
+	"strings"
 
 	"github.com/Azure/terraform-provider-azapi/xpprovider"
+	xpv1 "github.com/crossplane/crossplane-runtime/v2/apis/common/v1"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/resource"
 	"github.com/crossplane/upjet/v2/pkg/terraform"
 	"github.com/pkg/errors"
@@ -21,61 +23,152 @@ import (
 
 const (
 	// error messages
-	errNoProviderConfig        = "no providerConfigRef provided"
-	errGetProviderConfig       = "cannot get referenced ProviderConfig"
-	errTrackUsage              = "cannot track ProviderConfig usage"
-	errExtractCredentials      = "cannot extract credentials"
-	errUnmarshalCredentials    = "cannot unmarshal azapi credentials as JSON"
-	keySubscriptionID          = "subscriptionId"
-	keyClientID                = "clientId"
-	keyClientSecret            = "clientSecret"
-	keyTenantID                = "tenantId"
-	keyTerraformSubscriptionID = "subscription_id"
-	keyTerraformClientID       = "client_id"
-	keyTerraformClientSecret   = "client_secret"
-	keyTerraformTenantID       = "tenant_id"
+	errNoProviderConfig     = "no providerConfigRef provided"
+	errGetProviderConfig    = "cannot get referenced ProviderConfig"
+	errTrackUsage           = "cannot track ProviderConfig usage"
+	errExtractCredentials   = "cannot extract credentials"
+	errUnmarshalCredentials = "cannot unmarshal azapi credentials as JSON"
+	errTenantIDNotSet       = "tenant ID must be set in ProviderConfig when credential source is InjectedIdentity, UserAssignedManagedIdentity, SystemAssignedManagedIdentity, or OIDCTokenFile"
+	errClientIDNotSet       = "client ID must be set in ProviderConfig when credential source is OIDCTokenFile"
+	errSubscriptionIDNotSet = "subscription ID must be set in ProviderConfig when credential source is InjectedIdentity, UserAssignedManagedIdentity, SystemAssignedManagedIdentity, or OIDCTokenFile"
+	// Azure service principal credentials file JSON keys
+	keyAzureSubscriptionID = "subscriptionId"
+	keyAzureClientID       = "clientId"
+	keyAzureClientSecret   = "clientSecret"
+	keyAzureTenantID       = "tenantId"
+	// Terraform Provider configuration block keys
+	keySubscriptionID    = "subscription_id"
+	keyClientID          = "client_id"
+	keyTenantID          = "tenant_id"
+	keyClientSecret      = "client_secret"
+	keyEnvironment       = "environment"
+	keyUseMSI            = "use_msi"
+	keyUseOIDC           = "use_oidc"
+	keyOIDCTokenFilePath = "oidc_token_file_path"
+	keyUseAKSWorkloadID  = "use_aks_workload_identity"
+	// Default OidcTokenFilePath
+	defaultOidcTokenFilePath = "/var/run/secrets/azure/tokens/azure-identity-token"
 )
 
-// TerraformSetupBuilder builds Terraform a terraform.SetupFn function which
-// returns Terraform provider setup configuration
-func TerraformSetupBuilder() terraform.SetupFn {
-	return func(ctx context.Context, client client.Client, mgx resource.Managed) (terraform.Setup, error) {
+var (
+	credentialsSourceUserAssignedManagedIdentity   xpv1.CredentialsSource = "UserAssignedManagedIdentity"
+	credentialsSourceSystemAssignedManagedIdentity xpv1.CredentialsSource = "SystemAssignedManagedIdentity"
+	credentialsSourceOIDCTokenFile                 xpv1.CredentialsSource = "OIDCTokenFile"
+)
+
+// TerraformSetupBuilder returns Terraform setup with provider specific
+// configuration like provider credentials used to connect to cloud APIs in the
+// expected form of a Terraform provider.
+func TerraformSetupBuilder() terraform.SetupFn { //nolint:gocyclo
+	return func(ctx context.Context, crClient client.Client, mgx resource.Managed) (terraform.Setup, error) {
 		ps := terraform.Setup{}
 
-		pcSpec, err := resolveProviderConfig(ctx, client, mgx)
+		pcSpec, err := resolveProviderConfig(ctx, crClient, mgx)
 		if err != nil {
 			return terraform.Setup{}, err
 		}
 
-		data, err := resource.CommonCredentialExtractor(ctx, pcSpec.Credentials.Source, client, pcSpec.Credentials.CommonCredentialSelectors)
-		if err != nil {
-			return ps, errors.Wrap(err, errExtractCredentials)
+		ps.Configuration = map[string]any{}
+
+		switch pcSpec.Credentials.Source { //nolint:exhaustive
+		case credentialsSourceSystemAssignedManagedIdentity, credentialsSourceUserAssignedManagedIdentity:
+			err = msiAuth(pcSpec, &ps)
+		case credentialsSourceOIDCTokenFile:
+			err = oidcAuth(pcSpec, &ps)
+		default:
+			err = spAuth(ctx, pcSpec, &ps, crClient)
 		}
-		creds := map[string]string{}
-		if err := json.Unmarshal(data, &creds); err != nil {
-			return ps, errors.Wrap(err, errUnmarshalCredentials)
+		if err != nil {
+			return terraform.Setup{}, errors.Wrap(err, "failed to prepare terraform.Setup")
 		}
 
-		// set provider configuration
-		ps.Configuration = map[string]any{}
-		if v, ok := creds[keySubscriptionID]; ok {
-			ps.Configuration[keyTerraformSubscriptionID] = v
-		}
-		if v, ok := creds[keyClientID]; ok {
-			ps.Configuration[keyTerraformClientID] = v
-		}
-		if v, ok := creds[keyClientSecret]; ok {
-			ps.Configuration[keyTerraformClientSecret] = v
-		}
-		if v, ok := creds[keyTenantID]; ok {
-			ps.Configuration[keyTerraformTenantID] = v
-		}
 		ps.FrameworkProvider, err = xpprovider.FrameworkProvider(ctx)
 		if err != nil {
 			return terraform.Setup{}, errors.Wrap(err, "error initializing the framework provider")
 		}
 		return ps, nil
 	}
+}
+
+// spAuth configures service principal authentication (using client secret from credentials)
+func spAuth(ctx context.Context, pcSpec *namespacedv1beta1.ProviderConfigSpec, ps *terraform.Setup, crClient client.Client) error {
+	data, err := resource.CommonCredentialExtractor(ctx, pcSpec.Credentials.Source, crClient, pcSpec.Credentials.CommonCredentialSelectors)
+	if err != nil {
+		return errors.Wrap(err, errExtractCredentials)
+	}
+	data = []byte(strings.TrimSpace(string(data)))
+	azureCreds := map[string]string{}
+	if err := json.Unmarshal(data, &azureCreds); err != nil {
+		return errors.Wrap(err, errUnmarshalCredentials)
+	}
+	// set credentials configuration
+	ps.Configuration[keySubscriptionID] = azureCreds[keyAzureSubscriptionID]
+	ps.Configuration[keyTenantID] = azureCreds[keyAzureTenantID]
+	ps.Configuration[keyClientID] = azureCreds[keyAzureClientID]
+	ps.Configuration[keyClientSecret] = azureCreds[keyAzureClientSecret]
+	// Override with ProviderConfig spec values if provided
+	if pcSpec.SubscriptionID != nil {
+		ps.Configuration[keySubscriptionID] = *pcSpec.SubscriptionID
+	}
+	if pcSpec.TenantID != nil {
+		ps.Configuration[keyTenantID] = *pcSpec.TenantID
+	}
+	if pcSpec.ClientID != nil {
+		ps.Configuration[keyClientID] = *pcSpec.ClientID
+	}
+	if pcSpec.Environment != nil {
+		ps.Configuration[keyEnvironment] = *pcSpec.Environment
+	}
+	return nil
+}
+
+// msiAuth configures Managed Service Identity authentication
+func msiAuth(pcSpec *namespacedv1beta1.ProviderConfigSpec, ps *terraform.Setup) error {
+	if pcSpec.TenantID == nil || len(*pcSpec.TenantID) == 0 {
+		return errors.New(errTenantIDNotSet)
+	}
+	if pcSpec.SubscriptionID == nil || len(*pcSpec.SubscriptionID) == 0 {
+		return errors.New(errSubscriptionIDNotSet)
+	}
+	ps.Configuration[keySubscriptionID] = *pcSpec.SubscriptionID
+	ps.Configuration[keyTenantID] = *pcSpec.TenantID
+	ps.Configuration[keyUseMSI] = true
+	if pcSpec.ClientID != nil {
+		ps.Configuration[keyClientID] = *pcSpec.ClientID
+	}
+	if pcSpec.Environment != nil {
+		ps.Configuration[keyEnvironment] = *pcSpec.Environment
+	}
+	return nil
+}
+
+// oidcAuth configures OIDC/Workload Identity authentication
+func oidcAuth(pcSpec *namespacedv1beta1.ProviderConfigSpec, ps *terraform.Setup) error {
+	if pcSpec.TenantID == nil || len(*pcSpec.TenantID) == 0 {
+		return errors.New(errTenantIDNotSet)
+	}
+	if pcSpec.ClientID == nil || len(*pcSpec.ClientID) == 0 {
+		return errors.New(errClientIDNotSet)
+	}
+	if pcSpec.SubscriptionID == nil || len(*pcSpec.SubscriptionID) == 0 {
+		return errors.New(errSubscriptionIDNotSet)
+	}
+	// OIDC Token File Path defaults to a projected-volume path mounted in the pod
+	// running in the AKS cluster, when workload identity is enabled on the pod.
+	oidcTokenFilePath := defaultOidcTokenFilePath
+	if pcSpec.OIDCTokenFilePath != nil {
+		oidcTokenFilePath = *pcSpec.OIDCTokenFilePath
+	}
+	ps.Configuration[keySubscriptionID] = *pcSpec.SubscriptionID
+	ps.Configuration[keyTenantID] = *pcSpec.TenantID
+	ps.Configuration[keyClientID] = *pcSpec.ClientID
+	ps.Configuration[keyOIDCTokenFilePath] = oidcTokenFilePath
+	ps.Configuration[keyUseOIDC] = true
+	ps.Configuration[keyUseAKSWorkloadID] = true
+	if pcSpec.Environment != nil {
+		ps.Configuration[keyEnvironment] = *pcSpec.Environment
+	}
+	return nil
 }
 
 func legacyToModernProviderConfigSpec(pc *clusterv1beta1.ProviderConfig) (*namespacedv1beta1.ProviderConfigSpec, error) {

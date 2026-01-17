@@ -1,0 +1,37 @@
+# ProviderConfig for Azure Workload Identity (OIDC Token File)
+#
+# This configuration uses Azure Workload Identity, which is the recommended
+# method for authentication when running in AKS clusters with workload identity
+# enabled.
+#
+# Prerequisites:
+# 1. AKS cluster with workload identity enabled
+# 2. User-assigned managed identity created in Azure
+# 3. Federated identity credential configured on the managed identity
+# 4. Service account annotated with the managed identity client ID
+# 5. Pod configured to use the service account with workload identity
+#
+# For more details, see:
+# https://learn.microsoft.com/en-us/azure/aks/workload-identity-overview
+---
+apiVersion: azapi.upbound.io/v1beta1
+kind: ProviderConfig
+metadata:
+  name: workload-identity
+spec:
+  credentials:
+    # OIDCTokenFile instructs the provider to use OIDC tokens from a file
+    # for authentication, which is how Azure Workload Identity works.
+    source: OIDCTokenFile
+  # Azure Subscription ID where resources will be managed
+  subscriptionID: '00000000-0000-0000-0000-000000000000'
+  # Azure AD Tenant ID
+  tenantID: '00000000-0000-0000-0000-000000000000'
+  # Client ID of the user-assigned managed identity configured for workload identity
+  clientID: '00000000-0000-0000-0000-000000000000'
+  # Optional: Path to the OIDC token file
+  # Default: /var/run/secrets/azure/tokens/azure-identity-token
+  # oidcTokenFilePath: "/var/run/secrets/azure/tokens/azure-identity-token"
+  # Optional: Azure environment (public, usgovernment, china)
+  # Default: public
+  # environment: "public"
